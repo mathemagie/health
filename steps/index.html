@@ -65,7 +65,7 @@
 
   .card {
     background:var(--surface); border:1px solid var(--border); border-radius:12px;
-    padding:20px 24px; margin-bottom:24px; overflow-x:auto;
+    padding:20px 24px; margin-bottom:24px; overflow-x:auto; -webkit-overflow-scrolling:touch;
   }
   .card h2 { font-size:14px; margin:0 0 16px; font-weight:600; }
   .charts-row { display:flex; flex-wrap:wrap; gap:32px; }
@@ -94,6 +94,26 @@
     box-shadow:0 6px 20px rgba(0,0,0,.28); line-height:1.35;
   }
   #tooltip b { font-variant-numeric:tabular-nums; font-size:13.5px; }
+
+  /* ---- Mobile ---- */
+  @media (max-width: 640px) {
+    body { padding:16px 12px; }
+    h1 { font-size:19px; }
+    .sub { font-size:12px; }
+    .seg { width:100%; justify-content:space-between; }
+    .seg button { flex:1; padding:8px 6px; font-size:12.5px; }
+    .card { padding:14px 14px; }
+    .tiles { gap:10px; }
+    .tile { min-width:100%; padding:13px 16px; }
+    .tile .value { font-size:25px; }
+    .charts-row { gap:22px; }
+    .charts-row > div { min-width:100%; }
+    /* wide time-series scales to fit instead of forcing a scroll */
+    #trendChart svg { min-width:0; }
+    /* the calendar is inherently wide — let it scroll inside its card */
+    #calendar { -webkit-overflow-scrolling:touch; }
+    .legend { font-size:11px; }
+  }
 </style>
 </head>
 <body>
@@ -212,7 +232,8 @@ function drawTrend(m) {
 
   const W = 1000, H = 300, mg = { top: 16, right: 16, bottom: 28, left: 48 };
   const svg = d3.select("#trendChart").append("svg").attr("width", "100%").attr("height", H)
-    .attr("viewBox", `0 0 ${W} ${H}`).attr("preserveAspectRatio", "xMinYMid meet").style("min-width", "720px");
+    .attr("viewBox", `0 0 ${W} ${H}`).attr("preserveAspectRatio", "xMinYMid meet")
+    .style("min-width", "620px").style("max-width", "100%");
 
   const x = d3.scaleUtc().domain(d3.extent(days, d => d.date)).range([mg.left, W - mg.right]);
   const yMax = d3.quantile(days.map(d => d.v).sort(d3.ascending), 0.99);
