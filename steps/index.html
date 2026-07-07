@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Activity per day</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  /* Variables on :root so EVERY element (incl. the tooltip outside .viz-root)
+     inherits them. */
+  :root {
+    --page:      #f9f9f7;
+    --surface:   #fcfcfb;
+    --primary:   #0b0b0b;
+    --secondary: #52514e;
+    --muted:     #6f6e69;
+    --grid:      #e1e0d9;
+    --axis:      #c3c2b7;
+    --border:    rgba(11,11,11,0.10);
+    --s100:#cde2fb; --s200:#9ec5f4; --s300:#6da7ec; --s400:#3987e5;
+    --s500:#256abf; --s600:#184f95; --s700:#0d366b;
+    --empty:#e6e4dd;
+    --series-1:#256abf;
+    --tip-bg:#0b0b0b; --tip-fg:#ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page:#0d0d0d; --surface:#1a1a19; --primary:#fff; --secondary:#c3c2b7;
+      --muted:#9c9a92; --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+      --empty:#2a2a27; --series-1:#3987e5;
+      --tip-bg:#ffffff; --tip-fg:#0b0b0b;
+    }
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; }
+  body {
+    background:var(--page); color:var(--primary);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    padding:32px; -webkit-font-smoothing:antialiased;
+  }
+  .viz-root { max-width:1080px; margin:0 auto; }
+  h1 { font-size:22px; margin:0 0 2px; }
+  .sub { color:var(--secondary); font-size:13px; margin:0 0 20px; }
+
+  .seg {
+    display:inline-flex; background:var(--surface); border:1px solid var(--border);
+    border-radius:10px; padding:3px; gap:2px; margin-bottom:24px;
+  }
+  .seg button {
+    border:0; background:none; color:var(--secondary); font-size:13px;
+    padding:7px 15px; border-radius:7px; cursor:pointer; font-weight:550;
+  }
+  .seg button:hover { color:var(--primary); }
+  .seg button.active { background:var(--series-1); color:#fff; }
+
+  .tiles { display:flex; flex-wrap:wrap; gap:16px; margin-bottom:28px; }
+  .tile {
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:16px 20px; min-width:150px; flex:1;
+  }
+  .tile .label { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .tile .value { font-size:28px; font-weight:650; margin-top:4px; }
+  .tile .value small { font-size:15px; font-weight:500; color:var(--secondary); }
+  .tile .value .subd { font-size:14px; font-weight:500; color:var(--secondary); }
+
+  .card {
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:20px 24px; margin-bottom:24px; overflow-x:auto;
+  }
+  .card h2 { font-size:14px; margin:0 0 16px; font-weight:600; }
+  .charts-row { display:flex; flex-wrap:wrap; gap:32px; }
+  .charts-row > div { flex:1; min-width:320px; }
+  .chart-title { font-size:13px; font-weight:600; margin:0 0 10px; }
+
+  /* SVG text: legible ink, not near-invisible greys */
+  text { fill:var(--secondary); font-size:11px; }
+  .month-label { fill:var(--secondary); font-size:11px; }
+  .year-label { fill:var(--primary); font-size:13px; font-weight:700; }
+  .year-avg   { fill:var(--primary); font-size:14px; font-weight:650; font-variant-numeric:tabular-nums; }
+  .year-avg-unit { fill:var(--secondary); font-size:11px; }
+  .axis path, .axis line { stroke:var(--axis); }
+  .axis text { fill:var(--secondary); font-size:11px; }
+  .grid line { stroke:var(--grid); shape-rendering:crispEdges; }
+  .grid path { stroke:none; }
+  .bar-label { fill:var(--primary); font-size:11px; font-weight:600; font-variant-numeric:tabular-nums; }
+
+  .legend { display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--secondary); margin-top:14px; flex-wrap:wrap; }
+  .legend .sw { width:13px; height:13px; border-radius:2px; }
+
+  #tooltip {
+    position:fixed; pointer-events:none; opacity:0; transition:opacity .08s;
+    background:var(--tip-bg); color:var(--tip-fg); font-size:12.5px;
+    padding:8px 11px; border-radius:7px; white-space:nowrap; z-index:10;
+    box-shadow:0 6px 20px rgba(0,0,0,.28); line-height:1.35;
+  }
+  #tooltip b { font-variant-numeric:tabular-nums; font-size:13.5px; }
+</style>
+</head>
+<body>
+<div class="viz-root" data-palette="#cde2fb,#9ec5f4,#6da7ec,#3987e5,#256abf,#184f95,#0d366b">
+  <h1>📊 Activity per day</h1>
+  <p class="sub" id="range">Loading…</p>
+
+  <div class="seg" id="metric-seg"></div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="card">
+    <div id="calendar"></div>
+    <div class="legend">
+      <span>Fewer</span>
+      <span class="sw" style="background:var(--empty)"></span>
+      <span class="sw" style="background:var(--s100)"></span>
+      <span class="sw" style="background:var(--s300)"></span>
+      <span class="sw" style="background:var(--s500)"></span>
+      <span class="sw" style="background:var(--s700)"></span>
+      <span>More</span>
+      <span style="margin-left:auto">number at each year’s end = daily average</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 id="trend-title">Long-term trend</h2>
+    <p class="chart-title" style="color:var(--secondary);font-weight:500;margin:-10px 0 14px">
+      Faint dots are single days; the bold line is a 30-day rolling average.</p>
+    <div id="trendChart"></div>
+  </div>
+
+  <div class="card">
+    <h2 id="pattern-title">When you move</h2>
+    <div class="charts-row">
+      <div><p class="chart-title">By hour of day</p><div id="hourChart"></div></div>
+      <div><p class="chart-title">By day of week</p><div id="weekdayChart"></div></div>
+    </div>
+  </div>
+</div>
+<div id="tooltip"></div>
+
+<script>
+const tip = d3.select("#tooltip");
+function showTip(html, e) {
+  tip.html(html).style("opacity", 1)
+     .style("left", (e.clientX + 14) + "px").style("top", (e.clientY + 14) + "px");
+}
+function hideTip() { tip.style("opacity", 0); }
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+const METRICS = {
+  steps:    { key:"steps",    label:"Steps",         unit:"",     perDay:d3.format(",.0f"), total:d3.format(",.0f") },
+  distance: { key:"distance", label:"Distance",      unit:"km",   perDay:d3.format(",.1f"), total:d3.format(",.0f") },
+  active:   { key:"active",   label:"Active energy", unit:"kcal", perDay:d3.format(",.0f"), total:d3.format(",.0f") },
+};
+let current = "steps", DAILY, PATTERNS, BYKEY;
+
+Promise.all([
+  d3.json("../data/daily_metrics.json"),
+  d3.json("../data/patterns.json"),
+]).then(([daily, patterns]) => {
+  const parse = d3.utcParse("%Y-%m-%d");
+  DAILY = daily.map(d => ({ date: parse(d.date), key: d.date, steps: d.steps, distance: d.distance, active: d.active }));
+  PATTERNS = patterns;
+
+  d3.select("#range").text(
+    `${d3.utcFormat("%B %-d, %Y")(DAILY[0].date)} — ${d3.utcFormat("%B %-d, %Y")(DAILY[DAILY.length-1].date)}  ·  ${DAILY.length.toLocaleString()} days`
+  );
+
+  d3.select("#metric-seg").selectAll("button").data(Object.values(METRICS)).join("button")
+    .text(m => m.label).classed("active", m => m.key === current)
+    .on("click", (e, m) => { current = m.key; render(); });
+
+  render();
+});
+
+function render() {
+  const m = METRICS[current];
+  d3.selectAll("#metric-seg button").classed("active", d => d.key === current);
+  BYKEY = new Map(DAILY.map(d => [d.key, d[current]]));
+  const vals = DAILY.map(d => d[current]).filter(v => v > 0);
+  const total = d3.sum(vals), avg = d3.mean(vals);
+  const best = DAILY.reduce((a, b) => b[current] > a[current] ? b : a);
+
+  const u = m.unit ? " " + m.unit : "";
+  const tiles = [
+    { label: `Total ${m.label.toLowerCase()}`, value: `${m.total(total)}${u}` },
+    { label: "Daily average", value: `${m.perDay(avg)}${u}` },
+    { label: "Best day", value: `${m.perDay(best[current])}${u}`, sub: d3.utcFormat("%b %-d, %Y")(best.date) },
+  ];
+  d3.select("#tiles").selectAll(".tile").data(tiles).join("div").attr("class", "tile")
+    .html(d => `<div class="label">${d.label}</div>
+      <div class="value">${d.value}${d.sub ? `<br><span class="subd">${d.sub}</span>` : ""}</div>`);
+
+  d3.select("#trend-title").text(`Long-term trend — ${m.label.toLowerCase()}`);
+  d3.select("#pattern-title").text(`When you move — ${m.label.toLowerCase()}`);
+  drawCalendar(m);
+  drawTrend(m);
+  drawBars("#hourChart", PATTERNS.hourly, d => d.hour, [0,6,12,18,23].map(h=>({v:h,t:h+"h"})), m, "hour");
+  drawBars("#weekdayChart", PATTERNS.weekday, d => d.weekday, PATTERNS.weekday.map(d=>({v:d.weekday,t:d.name})), m, "weekday");
+}
+
+// ---------- Long-term rolling-average trend ----------
+function drawTrend(m) {
+  d3.select("#trendChart").selectAll("*").remove();
+  const days = DAILY.filter(d => d[current] > 0).map(d => ({ date: d.date, v: d[current] }));
+  const WIN = 30;
+  const roll = days.map((d, i) => {
+    const slice = days.slice(Math.max(0, i - WIN + 1), i + 1);
+    // Break the line across data gaps > 21 days so we never draw a smooth
+    // bridge over days we don't have (honesty over prettiness).
+    const def = i === 0 || (d.date - days[i - 1].date) <= 21 * 864e5;
+    return { date: d.date, v: d.v, avg: d3.mean(slice, x => x.v), def };
+  });
+
+  const W = 1000, H = 300, mg = { top: 16, right: 16, bottom: 28, left: 48 };
+  const svg = d3.select("#trendChart").append("svg").attr("width", "100%").attr("height", H)
+    .attr("viewBox", `0 0 ${W} ${H}`).attr("preserveAspectRatio", "xMinYMid meet").style("min-width", "720px");
+
+  const x = d3.scaleUtc().domain(d3.extent(days, d => d.date)).range([mg.left, W - mg.right]);
+  const yMax = d3.quantile(days.map(d => d.v).sort(d3.ascending), 0.99);
+  const y = d3.scaleLinear().domain([0, yMax]).nice().range([H - mg.bottom, mg.top]);
+
+  svg.append("g").attr("class", "grid").attr("transform", `translate(${mg.left},0)`)
+    .call(d3.axisLeft(y).ticks(4).tickSize(-(W - mg.left - mg.right)).tickFormat(d3.format("~s")))
+    .call(g => g.select(".domain").remove());
+  svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - mg.bottom})`)
+    .call(d3.axisBottom(x).ticks(d3.utcYear.every(1)).tickFormat(d3.utcFormat("%Y")));
+
+  // faint daily context (Law 5: keep one element rich so the smooth line reads as intentional)
+  svg.append("g").selectAll("circle").data(days).join("circle")
+    .attr("cx", d => x(d.date)).attr("cy", d => y(Math.min(d.v, yMax))).attr("r", 1.2)
+    .attr("fill", css("--series-1")).attr("opacity", 0.14);
+
+  const area = d3.area().defined(d => d.def).x(d => x(d.date)).y0(y(0)).y1(d => y(d.avg)).curve(d3.curveBasis);
+  const line = d3.line().defined(d => d.def).x(d => x(d.date)).y(d => y(d.avg)).curve(d3.curveBasis);
+  const grad = svg.append("defs").append("linearGradient").attr("id", "gt")
+    .attr("x1", 0).attr("y1", 0).attr("x2", 0).attr("y2", 1);
+  grad.append("stop").attr("offset", "0%").attr("stop-color", css("--series-1")).attr("stop-opacity", 0.25);
+  grad.append("stop").attr("offset", "100%").attr("stop-color", css("--series-1")).attr("stop-opacity", 0);
+  svg.append("path").datum(roll).attr("fill", "url(#gt)").attr("d", area);
+  svg.append("path").datum(roll).attr("fill", "none").attr("stroke", css("--series-1"))
+    .attr("stroke-width", 2.5).attr("d", line);
+
+  // hover crosshair
+  const focus = svg.append("g").style("display", "none");
+  focus.append("line").attr("y1", mg.top).attr("y2", H - mg.bottom).attr("stroke", css("--axis"));
+  focus.append("circle").attr("r", 4).attr("fill", css("--series-1")).attr("stroke", css("--surface")).attr("stroke-width", 2);
+  const bis = d3.bisector(d => d.date).center;
+  svg.append("rect").attr("x", mg.left).attr("y", mg.top).attr("width", W - mg.left - mg.right)
+    .attr("height", H - mg.top - mg.bottom).attr("fill", "none").attr("pointer-events", "all")
+    .on("mousemove", e => {
+      const d = roll[bis(roll, x.invert(d3.pointer(e)[0]))];
+      focus.style("display", null);
+      focus.select("line").attr("x1", x(d.date)).attr("x2", x(d.date));
+      focus.select("circle").attr("cx", x(d.date)).attr("cy", y(d.avg));
+      showTip(`${d3.utcFormat("%b %Y")(d.date)}<br><b>${m.perDay(d.avg)}${m.unit ? " " + m.unit : ""}</b> · 30-day avg`, e);
+    })
+    .on("mouseleave", () => { focus.style("display", "none"); hideTip(); });
+}
+
+// ---------- Calendar heatmap ----------
+function drawCalendar(m) {
+  d3.select("#calendar").selectAll("*").remove();
+  const cell = 13;
+  const yearGroups = d3.groups(DAILY, d => d.date.getUTCFullYear()).sort((a,b)=>a[0]-b[0]);
+  const years = yearGroups.map(d => d[0]);
+  const yearAvg = new Map(yearGroups.map(([y,v]) => {
+    const p = v.map(d=>d[current]).filter(x=>x>0);
+    return [y, p.length ? d3.mean(p) : 0];
+  }));
+  const maxV = d3.quantile(DAILY.map(d=>d[current]).filter(v=>v>0).sort(d3.ascending), 0.98) || 1;
+  const ramp = ["--s100","--s200","--s300","--s400","--s500","--s600","--s700"].map(css);
+  const color = d3.scaleQuantize().domain([Math.max(1e-6, maxV*0.02), maxV]).range(ramp);
+
+  const marginTop = 16, headerH = 20, marginLeft = 46, yearH = cell*7 + 20;
+  const width = marginLeft + 53*cell + 108;
+  const height = marginTop + headerH + years.length*yearH;
+  const svg = d3.select("#calendar").append("svg")
+    .attr("width", width).attr("height", height)
+    .attr("viewBox", `0 0 ${width} ${height}`).style("min-width", width+"px");
+  const timeWeek = d3.utcSunday, fmtDay = d3.utcFormat("%Y-%m-%d");
+
+  // Month labels ONCE at the top — every year's grid starts at January in the
+  // same column, so one header serves all rows (positions from the densest year).
+  const refYear = yearGroups.reduce((a,b) => b[1].length > a[1].length ? b : a)[0];
+  const refMonths = d3.utcMonths(new Date(Date.UTC(refYear,0,1)), new Date(Date.UTC(refYear,11,31)));
+  svg.append("g").attr("transform", `translate(${marginLeft},${marginTop + 10})`)
+    .selectAll("text").data(refMonths).join("text").attr("class","month-label")
+    .attr("x", mo => timeWeek.count(d3.utcYear(mo), mo)*cell).attr("y", 0)
+    .text(d3.utcFormat("%b"));
+
+  years.forEach((year, i) => {
+    const g = svg.append("g").attr("transform", `translate(${marginLeft},${marginTop + headerH + i*yearH + 8})`);
+    g.append("text").attr("class","year-label").attr("x", -marginLeft+2).attr("y", cell*3.5)
+      .attr("dominant-baseline","middle").text(year);
+
+    const days = d3.utcDays(new Date(Date.UTC(year,0,1)), new Date(Date.UTC(year+1,0,1)));
+    g.selectAll(".cell").data(days).join("rect")
+      .attr("width", cell-2).attr("height", cell-2).attr("rx", 2)
+      .attr("stroke", css("--surface")).attr("stroke-width", 2)
+      .attr("x", d => timeWeek.count(d3.utcYear(d), d)*cell)
+      .attr("y", d => d.getUTCDay()*cell)
+      .attr("fill", d => { const v = BYKEY.get(fmtDay(d)); return v>0 ? color(Math.min(v,maxV)) : css("--empty"); })
+      .on("mousemove", (e,d) => {
+        const v = BYKEY.get(fmtDay(d));
+        showTip(`${d3.utcFormat("%A, %b %-d, %Y")(d)}<br><b>${v>0 ? m.perDay(v)+(m.unit?" "+m.unit:"") : "no data"}</b>`, e);
+      })
+      .on("mouseleave", hideTip);
+
+    const gx = 53*cell + 12;
+    g.append("text").attr("class","year-avg").attr("x", gx).attr("y", cell*3.5-6)
+      .attr("dominant-baseline","middle").text(m.perDay(yearAvg.get(year)));
+    g.append("text").attr("class","year-avg-unit").attr("x", gx).attr("y", cell*3.5+10)
+      .attr("dominant-baseline","middle").text(m.unit ? m.unit+"/day" : "per day");
+  });
+}
+
+// ---------- Generic bar chart (hour / weekday) ----------
+function drawBars(sel, data, xkey, ticks, m, kind) {
+  d3.select(sel).selectAll("*").remove();
+  const W = 480, H = 240, mg = { top: 22, right: 12, bottom: 26, left: 46 };
+  const svg = d3.select(sel).append("svg").attr("width","100%").attr("height",H)
+    .attr("viewBox", `0 0 ${W} ${H}`).attr("preserveAspectRatio","xMinYMid meet");
+
+  const x = d3.scaleBand().domain(data.map(xkey)).range([mg.left, W-mg.right]).padding(0.22);
+  const y = d3.scaleLinear().domain([0, d3.max(data, d=>d[current])*1.15 || 1]).nice().range([H-mg.bottom, mg.top]);
+
+  svg.append("g").attr("class","grid").attr("transform",`translate(${mg.left},0)`)
+    .call(d3.axisLeft(y).ticks(4).tickSize(-(W-mg.left-mg.right)).tickFormat(d3.format("~s")))
+    .call(g => g.select(".domain").remove());
+
+  svg.append("g").attr("class","axis").attr("transform",`translate(0,${H-mg.bottom})`)
+    .selectAll("text").data(ticks).join("text")
+    .attr("x", d => x(d.v)+x.bandwidth()/2).attr("y", 16).attr("text-anchor","middle").text(d=>d.t);
+  svg.append("line").attr("x1", mg.left).attr("x2", W-mg.right).attr("y1", H-mg.bottom).attr("y2", H-mg.bottom)
+    .attr("stroke", css("--axis"));
+
+  const peak = d3.max(data, d=>d[current]);
+  svg.selectAll(".bar").data(data).join("rect")
+    .attr("x", d=>x(xkey(d))).attr("width", x.bandwidth())
+    .attr("y", d=>y(d[current])).attr("height", d=>y(0)-y(d[current]))
+    .attr("rx", 3).attr("fill", css("--series-1"))
+    .attr("opacity", d => d[current]===peak ? 1 : 0.82)
+    .on("mousemove", (e,d) => {
+      const lbl = kind==="hour" ? d.hour+":00–"+(d.hour+1)+":00" : d.name;
+      showTip(`${lbl}<br><b>${m.perDay(d[current])}${m.unit?" "+m.unit:""}</b> avg`, e);
+    })
+    .on("mouseleave", hideTip);
+
+  const pk = data.find(d=>d[current]===peak);
+  svg.append("text").attr("class","bar-label")
+    .attr("x", x(xkey(pk))+x.bandwidth()/2).attr("y", y(peak)-6)
+    .attr("text-anchor","middle").text(m.perDay(peak));
+}
+</script>
+</body>
+</html>

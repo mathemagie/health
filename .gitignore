@@ -1,0 +1,16 @@
+# Personal health data — never commit
+export.zip
+apple_health_export/
+
+# Ignore ALL generated data EXCEPT the two aggregate files the public
+# dashboard needs (steps/distance/energy per day + hour/weekday averages).
+# GPS routes, raw records, and workouts stay private (contain location).
+data/*
+!data/daily_metrics.json
+!data/patterns.json
+
+# OS / build junk
+.DS_Store
+**/.DS_Store
+__pycache__/
+*.pyc
