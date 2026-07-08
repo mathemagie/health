@@ -39,8 +39,12 @@
     padding:32px; -webkit-font-smoothing:antialiased;
   }
   .viz-root { max-width:1080px; margin:0 auto; }
+  .header { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
   h1 { font-size:22px; margin:0 0 2px; }
   .sub { color:var(--secondary); font-size:13px; margin:0 0 20px; }
+
+  .seg.lang { margin-bottom:0; flex:0 0 auto; }
+  .seg.lang button { padding:7px 12px; font-weight:650; letter-spacing:.03em; }
 
   .seg {
     display:inline-flex; background:var(--surface); border:1px solid var(--border);
@@ -68,9 +72,18 @@
     padding:20px 24px; margin-bottom:24px; overflow-x:auto; -webkit-overflow-scrolling:touch;
   }
   .card h2 { font-size:14px; margin:0 0 16px; font-weight:600; }
+  /* Each metric switch tears down and repaints the SVGs; a short fade-in makes
+     that read as a smooth transition rather than a flash (Law 3: hide the wait). */
+  @keyframes chart-in { from { opacity:0; } to { opacity:1; } }
+  #calendar svg, #trendChart svg, #hourChart svg, #weekdayChart svg { animation:chart-in .18s ease-out; }
+  @media (prefers-reduced-motion: reduce) {
+    #calendar svg, #trendChart svg, #hourChart svg, #weekdayChart svg { animation:none; }
+  }
   .charts-row { display:flex; flex-wrap:wrap; gap:32px; }
   .charts-row > div { flex:1; min-width:320px; }
   .chart-title { font-size:13px; font-weight:600; margin:0 0 10px; }
+  .takeaway { font-size:13px; color:var(--secondary); margin:18px 0 0; line-height:1.5; }
+  .takeaway b { color:var(--primary); font-weight:650; }
 
   /* SVG text: legible ink, not near-invisible greys */
   text { fill:var(--secondary); font-size:11px; }
@@ -102,6 +115,8 @@
     .sub { font-size:12px; }
     .seg { width:100%; justify-content:space-between; }
     .seg button { flex:1; padding:8px 6px; font-size:12.5px; }
+    .seg.lang { width:auto; }
+    .seg.lang button { flex:0 0 auto; padding:7px 12px; }
     .card { padding:14px 14px; }
     .tiles { gap:10px; }
     .tile { min-width:100%; padding:13px 16px; }
@@ -118,8 +133,16 @@
 </head>
 <body>
 <div class="viz-root" data-palette="#cde2fb,#9ec5f4,#6da7ec,#3987e5,#256abf,#184f95,#0d366b">
-  <h1>📊 Activity per day</h1>
-  <p class="sub" id="range">Loading…</p>
+  <div class="header">
+    <div>
+      <h1 id="h1">📊 Activity per day</h1>
+      <p class="sub" id="range">Loading…</p>
+    </div>
+    <div class="seg lang" id="lang-seg" role="group" aria-label="Language">
+      <button data-lang="en">EN</button>
+      <button data-lang="fr">FR</button>
+    </div>
+  </div>
 
   <div class="seg" id="metric-seg"></div>
 
@@ -128,20 +151,19 @@
   <div class="card">
     <div id="calendar"></div>
     <div class="legend">
-      <span>Fewer</span>
+      <span id="legend-fewer">Fewer</span>
       <span class="sw" style="background:var(--empty)"></span>
       <span class="sw" style="background:var(--s100)"></span>
       <span class="sw" style="background:var(--s300)"></span>
       <span class="sw" style="background:var(--s500)"></span>
       <span class="sw" style="background:var(--s700)"></span>
-      <span>More</span>
-      <span style="margin-left:auto">number at each year’s end = daily average</span>
+      <span id="legend-more">More</span>
     </div>
   </div>
 
   <div class="card">
     <h2 id="trend-title">Long-term trend</h2>
-    <p class="chart-title" style="color:var(--secondary);font-weight:500;margin:-10px 0 14px">
+    <p class="chart-title" id="trend-sub" style="color:var(--secondary);font-weight:500;margin:-10px 0 14px">
       Faint dots are single days; the bold line is a 30-day rolling average.</p>
     <div id="trendChart"></div>
   </div>
@@ -149,9 +171,10 @@
   <div class="card">
     <h2 id="pattern-title">When you move</h2>
     <div class="charts-row">
-      <div><p class="chart-title">By hour of day</p><div id="hourChart"></div></div>
-      <div><p class="chart-title">By day of week</p><div id="weekdayChart"></div></div>
+      <div><p class="chart-title" id="hour-title">By hour of day</p><div id="hourChart"></div></div>
+      <div><p class="chart-title" id="weekday-title">By day of week</p><div id="weekdayChart"></div></div>
     </div>
+    <p class="takeaway" id="takeaway"></p>
   </div>
 </div>
 <div id="tooltip"></div>
@@ -166,11 +189,86 @@ function hideTip() { tip.style("opacity", 0); }
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
 const METRICS = {
-  steps:    { key:"steps",    label:"Steps",         unit:"",     perDay:d3.format(",.0f"), total:d3.format(",.0f") },
-  distance: { key:"distance", label:"Distance",      unit:"km",   perDay:d3.format(",.1f"), total:d3.format(",.0f") },
-  active:   { key:"active",   label:"Active energy", unit:"kcal", perDay:d3.format(",.0f"), total:d3.format(",.0f") },
+  steps:    { key:"steps",    unit:"",     perDay:",.0f", total:",.0f" },
+  distance: { key:"distance", unit:"km",   perDay:",.1f", total:",.0f" },
+  active:   { key:"active",   unit:"kcal", perDay:",.0f", total:",.0f" },
 };
-let current = "steps", DAILY, PATTERNS, BYKEY;
+
+// ---------- i18n: d3 locales (dates + numbers) and UI strings ----------
+const TIME_LOCALES = {
+  en: d3.timeFormatLocale({
+    dateTime:"%x, %X", date:"%-m/%-d/%Y", time:"%-I:%M:%S %p", periods:["AM","PM"],
+    days:["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"],
+    shortDays:["Sun","Mon","Tue","Wed","Thu","Fri","Sat"],
+    months:["January","February","March","April","May","June","July","August","September","October","November","December"],
+    shortMonths:["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"] }),
+  fr: d3.timeFormatLocale({
+    dateTime:"%A %e %B %Y à %X", date:"%d/%m/%Y", time:"%H:%M:%S", periods:["AM","PM"],
+    days:["dimanche","lundi","mardi","mercredi","jeudi","vendredi","samedi"],
+    shortDays:["dim.","lun.","mar.","mer.","jeu.","ven.","sam."],
+    months:["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"],
+    shortMonths:["janv.","févr.","mars","avr.","mai","juin","juil.","août","sept.","oct.","nov.","déc."] }),
+};
+const NUM_LOCALES = {
+  en: d3.formatLocale({ decimal:".", thousands:",",      grouping:[3], currency:["$",""] }),
+  fr: d3.formatLocale({ decimal:",", thousands:" ", grouping:[3], currency:[""," €"] }),
+};
+const STR = {
+  en: {
+    title:"Activity per day", loading:"Loading…", days:"days",
+    metrics:{ steps:"Steps", distance:"Distance", active:"Active energy" },
+    totalOf: l => `Total ${l.toLowerCase()}`, dailyAvg:"Daily average", bestDay:"Best day",
+    fewer:"Fewer", more:"More",
+    trendTitle: l => `Long-term trend — ${l.toLowerCase()}`,
+    trendSub:"Faint dots are single days; the bold line is a 30-day rolling average.",
+    patternTitle: l => `When you move — ${l.toLowerCase()}`,
+    byHour:"By hour of day", byWeekday:"By day of week",
+    weekdayShort:["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],
+    perDayUnit: u => u ? `${u}/day` : "per day",
+    noData:"no data", rollAvg:"30-day avg", avg:"avg",
+    rangeDate:"%B %-d, %Y", tileDate:"%b %-d, %Y", calDate:"%A, %b %-d, %Y", monthYear:"%b %Y",
+    takeaway:(mkey,i,hr)=>{
+      const l={steps:"steps",distance:"distance",active:"active energy"}[mkey];
+      const D=["Mondays","Tuesdays","Wednesdays","Thursdays","Fridays","Saturdays","Sundays"];
+      const ap=h=>(h%12||12)+(h<12?"am":"pm");
+      return `You rack up the most ${l} on <b>${D[i]}</b>, and around <b>${ap(hr)}–${ap((hr+1)%24)}</b>.`;
+    },
+  },
+  fr: {
+    title:"Activité par jour", loading:"Chargement…", days:"jours",
+    metrics:{ steps:"Pas", distance:"Distance", active:"Énergie active" },
+    totalOf: l => `${l} au total`, dailyAvg:"Moyenne par jour", bestDay:"Meilleur jour",
+    fewer:"Moins", more:"Plus",
+    trendTitle: l => `Tendance long terme — ${l.toLowerCase()}`,
+    trendSub:"Les points pâles sont des jours isolés ; la ligne épaisse est une moyenne glissante sur 30 jours.",
+    patternTitle: l => `Quand tu bouges — ${l.toLowerCase()}`,
+    byHour:"Par heure de la journée", byWeekday:"Par jour de la semaine",
+    weekdayShort:["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"],
+    perDayUnit: u => u ? `${u}/jour` : "par jour",
+    noData:"pas de donnée", rollAvg:"moy. 30 j", avg:"moy.",
+    rangeDate:"%-d %B %Y", tileDate:"%-d %b %Y", calDate:"%A %-d %b %Y", monthYear:"%b %Y",
+    takeaway:(mkey,i,hr)=>{
+      const de={steps:"de pas",distance:"de distance",active:"d’énergie active"}[mkey];
+      const D=["le lundi","le mardi","le mercredi","le jeudi","le vendredi","le samedi","le dimanche"];
+      return `C’est <b>${D[i]}</b> et vers <b>${hr}h–${(hr+1)%24}h</b> que tu accumules le plus ${de}.`;
+    },
+  },
+};
+
+const metricFromHash = () => { const k = decodeURIComponent(location.hash.slice(1)); return METRICS[k] ? k : null; };
+const savedMetric = (() => { try { const k = localStorage.getItem("metric"); return METRICS[k] ? k : null; } catch { return null; } })();
+const savedLang = (() => { try { const l = localStorage.getItem("lang"); return STR[l] ? l : null; } catch { return null; } })();
+// priority: URL fragment (shareable link) > last choice > default
+let current = metricFromHash() || savedMetric || "steps";
+// priority: saved choice > browser language > English
+let lang = savedLang || ((navigator.language || "").toLowerCase().startsWith("fr") ? "fr" : "en");
+let DAILY, PATTERNS, BYKEY;
+
+// locale-aware formatters, kept in sync with `lang`
+let TFMT = TIME_LOCALES[lang], NFMT = NUM_LOCALES[lang];
+const fmtTime = pat => TFMT.utcFormat(pat);
+const fmtNum  = spec => NFMT.format(spec);
+const label   = key => STR[lang].metrics[key];
 
 Promise.all([
   d3.json("../data/daily_metrics.json"),
@@ -180,41 +278,85 @@ Promise.all([
   DAILY = daily.map(d => ({ date: parse(d.date), key: d.date, steps: d.steps, distance: d.distance, active: d.active }));
   PATTERNS = patterns;
 
-  d3.select("#range").text(
-    `${d3.utcFormat("%B %-d, %Y")(DAILY[0].date)} — ${d3.utcFormat("%B %-d, %Y")(DAILY[DAILY.length-1].date)}  ·  ${DAILY.length.toLocaleString()} days`
-  );
-
   d3.select("#metric-seg").selectAll("button").data(Object.values(METRICS)).join("button")
-    .text(m => m.label).classed("active", m => m.key === current)
-    .on("click", (e, m) => { current = m.key; render(); });
+    .classed("active", m => m.key === current)
+    // Update the URL fragment; the hashchange listener re-renders. Clicking the
+    // already-active metric changes nothing (no hashchange fires) — that's fine.
+    .on("click", (e, m) => { location.hash = m.key; });
 
-  render();
+  d3.selectAll("#lang-seg button").on("click", e => applyLang(e.currentTarget.dataset.lang));
+
+  // Reflect the initial metric in the URL without adding a history entry.
+  history.replaceState(null, "", "#" + current);
+  applyLang(lang);   // sets all static text + formatters, then renders
 });
 
+window.addEventListener("hashchange", () => {
+  const k = metricFromHash();
+  if (k && k !== current) {
+    current = k;
+    try { localStorage.setItem("metric", current); } catch {}
+    render();
+  }
+});
+
+// Switch language: repoint the formatters, restate every fixed string, re-render.
+function applyLang(l) {
+  if (!STR[l]) return;
+  lang = l;
+  try { localStorage.setItem("lang", l); } catch {}
+  TFMT = TIME_LOCALES[l]; NFMT = NUM_LOCALES[l];
+  const S = STR[l];
+  document.documentElement.lang = l;
+  document.title = S.title;
+  d3.select("#h1").text(`📊 ${S.title}`);
+  d3.select("#trend-sub").text(S.trendSub);
+  d3.select("#hour-title").text(S.byHour);
+  d3.select("#weekday-title").text(S.byWeekday);
+  d3.select("#legend-fewer").text(S.fewer);
+  d3.select("#legend-more").text(S.more);
+  d3.selectAll("#metric-seg button").text(m => S.metrics[m.key]);
+  d3.selectAll("#lang-seg button").classed("active", function () { return this.dataset.lang === l; });
+  if (DAILY) render();
+}
+
 function render() {
-  const m = METRICS[current];
+  const m = METRICS[current], S = STR[lang];
   d3.selectAll("#metric-seg button").classed("active", d => d.key === current);
   BYKEY = new Map(DAILY.map(d => [d.key, d[current]]));
   const vals = DAILY.map(d => d[current]).filter(v => v > 0);
   const total = d3.sum(vals), avg = d3.mean(vals);
   const best = DAILY.reduce((a, b) => b[current] > a[current] ? b : a);
+  const perDay = fmtNum(m.perDay), fmtTotal = fmtNum(m.total);
+  const lbl = label(current);
+
+  d3.select("#range").text(
+    `${fmtTime(S.rangeDate)(DAILY[0].date)} — ${fmtTime(S.rangeDate)(DAILY[DAILY.length-1].date)}  ·  ${fmtNum(",")(DAILY.length)} ${S.days}`
+  );
 
   const u = m.unit ? " " + m.unit : "";
   const tiles = [
-    { label: `Total ${m.label.toLowerCase()}`, value: `${m.total(total)}${u}` },
-    { label: "Daily average", value: `${m.perDay(avg)}${u}` },
-    { label: "Best day", value: `${m.perDay(best[current])}${u}`, sub: d3.utcFormat("%b %-d, %Y")(best.date) },
+    { label: S.totalOf(lbl),  value: `${fmtTotal(total)}${u}` },
+    { label: S.dailyAvg,      value: `${perDay(avg)}${u}` },
+    { label: S.bestDay,       value: `${perDay(best[current])}${u}`, sub: fmtTime(S.tileDate)(best.date) },
   ];
   d3.select("#tiles").selectAll(".tile").data(tiles).join("div").attr("class", "tile")
     .html(d => `<div class="label">${d.label}</div>
       <div class="value">${d.value}${d.sub ? `<br><span class="subd">${d.sub}</span>` : ""}</div>`);
 
-  d3.select("#trend-title").text(`Long-term trend — ${m.label.toLowerCase()}`);
-  d3.select("#pattern-title").text(`When you move — ${m.label.toLowerCase()}`);
+  d3.select("#trend-title").text(S.trendTitle(lbl));
+  d3.select("#pattern-title").text(S.patternTitle(lbl));
+
+  // Law 10: the peak weekday/hour are already computed for the bars — say them plainly.
+  const peakDay = PATTERNS.weekday.reduce((a, b) => b[current] > a[current] ? b : a);
+  const peakHr = PATTERNS.hourly.reduce((a, b) => b[current] > a[current] ? b : a);
+  d3.select("#takeaway").html(S.takeaway(current, peakDay.weekday, peakHr.hour));
+
   drawCalendar(m);
   drawTrend(m);
   drawBars("#hourChart", PATTERNS.hourly, d => d.hour, [0,6,12,18,23].map(h=>({v:h,t:h+"h"})), m, "hour");
-  drawBars("#weekdayChart", PATTERNS.weekday, d => d.weekday, PATTERNS.weekday.map(d=>({v:d.weekday,t:d.name})), m, "weekday");
+  drawBars("#weekdayChart", PATTERNS.weekday, d => d.weekday,
+           PATTERNS.weekday.map(d=>({v:d.weekday,t:S.weekdayShort[d.weekday]})), m, "weekday");
 }
 
 // ---------- Long-term rolling-average trend ----------
@@ -240,10 +382,10 @@ function drawTrend(m) {
   const y = d3.scaleLinear().domain([0, yMax]).nice().range([H - mg.bottom, mg.top]);
 
   svg.append("g").attr("class", "grid").attr("transform", `translate(${mg.left},0)`)
-    .call(d3.axisLeft(y).ticks(4).tickSize(-(W - mg.left - mg.right)).tickFormat(d3.format("~s")))
+    .call(d3.axisLeft(y).ticks(4).tickSize(-(W - mg.left - mg.right)).tickFormat(fmtNum("~s")))
     .call(g => g.select(".domain").remove());
   svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - mg.bottom})`)
-    .call(d3.axisBottom(x).ticks(d3.utcYear.every(1)).tickFormat(d3.utcFormat("%Y")));
+    .call(d3.axisBottom(x).ticks(d3.utcYear.every(1)).tickFormat(fmtTime("%Y")));
 
   // faint daily context (Law 5: keep one element rich so the smooth line reads as intentional)
   svg.append("g").selectAll("circle").data(days).join("circle")
@@ -272,7 +414,7 @@ function drawTrend(m) {
       focus.style("display", null);
       focus.select("line").attr("x1", x(d.date)).attr("x2", x(d.date));
       focus.select("circle").attr("cx", x(d.date)).attr("cy", y(d.avg));
-      showTip(`${d3.utcFormat("%b %Y")(d.date)}<br><b>${m.perDay(d.avg)}${m.unit ? " " + m.unit : ""}</b> · 30-day avg`, e);
+      showTip(`${fmtTime(STR[lang].monthYear)(d.date)}<br><b>${fmtNum(m.perDay)(d.avg)}${m.unit ? " " + m.unit : ""}</b> · ${STR[lang].rollAvg}`, e);
     })
     .on("mouseleave", () => { focus.style("display", "none"); hideTip(); });
 }
@@ -306,7 +448,7 @@ function drawCalendar(m) {
   svg.append("g").attr("transform", `translate(${marginLeft},${marginTop + 10})`)
     .selectAll("text").data(refMonths).join("text").attr("class","month-label")
     .attr("x", mo => timeWeek.count(d3.utcYear(mo), mo)*cell).attr("y", 0)
-    .text(d3.utcFormat("%b"));
+    .text(fmtTime("%b"));
 
   years.forEach((year, i) => {
     const g = svg.append("g").attr("transform", `translate(${marginLeft},${marginTop + headerH + i*yearH + 8})`);
@@ -322,15 +464,15 @@ function drawCalendar(m) {
       .attr("fill", d => { const v = BYKEY.get(fmtDay(d)); return v>0 ? color(Math.min(v,maxV)) : css("--empty"); })
       .on("mousemove", (e,d) => {
         const v = BYKEY.get(fmtDay(d));
-        showTip(`${d3.utcFormat("%A, %b %-d, %Y")(d)}<br><b>${v>0 ? m.perDay(v)+(m.unit?" "+m.unit:"") : "no data"}</b>`, e);
+        showTip(`${fmtTime(STR[lang].calDate)(d)}<br><b>${v>0 ? fmtNum(m.perDay)(v)+(m.unit?" "+m.unit:"") : STR[lang].noData}</b>`, e);
       })
       .on("mouseleave", hideTip);
 
     const gx = 53*cell + 12;
     g.append("text").attr("class","year-avg").attr("x", gx).attr("y", cell*3.5-6)
-      .attr("dominant-baseline","middle").text(m.perDay(yearAvg.get(year)));
+      .attr("dominant-baseline","middle").text(fmtNum(m.perDay)(yearAvg.get(year)));
     g.append("text").attr("class","year-avg-unit").attr("x", gx).attr("y", cell*3.5+10)
-      .attr("dominant-baseline","middle").text(m.unit ? m.unit+"/day" : "per day");
+      .attr("dominant-baseline","middle").text(STR[lang].perDayUnit(m.unit));
   });
 }
 
@@ -345,7 +487,7 @@ function drawBars(sel, data, xkey, ticks, m, kind) {
   const y = d3.scaleLinear().domain([0, d3.max(data, d=>d[current])*1.15 || 1]).nice().range([H-mg.bottom, mg.top]);
 
   svg.append("g").attr("class","grid").attr("transform",`translate(${mg.left},0)`)
-    .call(d3.axisLeft(y).ticks(4).tickSize(-(W-mg.left-mg.right)).tickFormat(d3.format("~s")))
+    .call(d3.axisLeft(y).ticks(4).tickSize(-(W-mg.left-mg.right)).tickFormat(fmtNum("~s")))
     .call(g => g.select(".domain").remove());
 
   svg.append("g").attr("class","axis").attr("transform",`translate(0,${H-mg.bottom})`)
@@ -361,15 +503,15 @@ function drawBars(sel, data, xkey, ticks, m, kind) {
     .attr("rx", 3).attr("fill", css("--series-1"))
     .attr("opacity", d => d[current]===peak ? 1 : 0.82)
     .on("mousemove", (e,d) => {
-      const lbl = kind==="hour" ? d.hour+":00–"+(d.hour+1)+":00" : d.name;
-      showTip(`${lbl}<br><b>${m.perDay(d[current])}${m.unit?" "+m.unit:""}</b> avg`, e);
+      const lbl = kind==="hour" ? d.hour+":00–"+(d.hour+1)+":00" : STR[lang].weekdayShort[d.weekday];
+      showTip(`${lbl}<br><b>${fmtNum(m.perDay)(d[current])}${m.unit?" "+m.unit:""}</b> ${STR[lang].avg}`, e);
     })
     .on("mouseleave", hideTip);
 
   const pk = data.find(d=>d[current]===peak);
   svg.append("text").attr("class","bar-label")
     .attr("x", x(xkey(pk))+x.bandwidth()/2).attr("y", y(peak)-6)
-    .attr("text-anchor","middle").text(m.perDay(peak));
+    .attr("text-anchor","middle").text(fmtNum(m.perDay)(peak));
 }
 </script>
 </body>
